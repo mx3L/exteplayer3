@@ -53,18 +53,9 @@
 /* Makros/Constants	      */
 /* ***************************** */
 
-#define WMV3_PRIVATE_DATA_LENGTH 4
-
-#define METADATA_STRUCT_A_START     12
-#define METADATA_STRUCT_B_START     24
-#define METADATA_STRUCT_B_FRAMERATE_START   32
-#define METADATA_STRUCT_C_START     8
-
-
-#define WMV_SEQUENCE_LAYER_METADATA_START_CODE  0x80
 #define WMV_FRAME_START_CODE 0x0d
 
-#define SAM_WITH_DEBUG
+//#define SAM_WITH_DEBUG
 #ifdef SAM_WITH_DEBUG
 #define WMV_DEBUG
 #else
@@ -94,23 +85,11 @@ if (debug_level >= level) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); 
 
 static const  uint8_t Vc1FrameStartCode[]     = {0, 0, 1, WMV_FRAME_START_CODE};
 
-static const uint8_t  Metadata[] =
-{
-    0x00,    0x00,   0x00,   0xc5,
-    0x04,    0x00,   0x00,   0x00,
-    0xc0,    0x00,   0x00,   0x00,   /* Struct C set for for advanced profile*/
-    0x00,    0x00,   0x00,   0x00,   /* Struct A */
-    0x00,    0x00,   0x00,   0x00,
-    0x0c,    0x00,   0x00,   0x00,
-    0x60,    0x00,   0x00,   0x00,   /* Struct B */
-    0x00,    0x00,   0x00,   0x00,
-    0x00,    0x00,   0x00,   0x00
-};
-
 /* ***************************** */
 /* Varaibles                     */
 /* ***************************** */
 static int initialHeader = 1;
+static video_codec_data_t videocodecdata = {0, 0};
 
 /* ***************************** */
 /* Prototypes                    */
@@ -150,14 +129,9 @@ static int writeData(void* _call)
         wmv_err("file pointer < 0. ignoring ...\n");
         return 0;
     }
-    /*
-    if(call->private_size <= 0 || NULL == call->private_data)
-    {
-        wmv_err("empty private_data < 0. ignoring ...\n");
-        return 0;
-    }
-    */
-    printf("--------------------------> call->private_data[%p]\n", call->private_data);
+
+    wmv_printf(10, "VideoPts %lld\n", call->Pts);
+    wmv_printf(10, "Got Private Size %d\n", call->private_size);
     
     unsigned char PesHeader[PES_MAX_HEADER_SIZE + sizeof(Vc1FrameStartCode)];
     int32_t ic = 0;
@@ -167,101 +141,56 @@ static int writeData(void* _call)
     iov[ic++].iov_base = PesHeader;
     if (initialHeader) 
     {
-        wmv_printf(10, "VideoPts %lld\n", call->Pts);
-        wmv_printf(10, "Got Private Size %d\n", call->private_size);
-        wmv_printf(10, "Framerate: %u\n", call->FrameRate);
-        wmv_printf(10, "biWidth: %d\n",   call->Width);
-        wmv_printf(10, "biHeight: %d\n",  call->Height);
-    
         initialHeader = 0;
-        video_codec_data_t videocodecdata = {0, 0};
-#if 1
-        videocodecdata.length = sizeof(Metadata);
-        videocodecdata.data = malloc(videocodecdata.length);
-        uint8_t *pData = videocodecdata.data;
-        
-        memcpy(videocodecdata.data, Metadata, sizeof(Metadata));
-        
-        uint32_t crazyFramerate = 0;
-
-        wmv_printf(10, "Framerate: %u\n", call->FrameRate);
-        wmv_printf(10, "biWidth: %d\n",   call->Width);
-        wmv_printf(10, "biHeight: %d\n",  call->Height);
-
-        crazyFramerate = ((10000000.0 / call->FrameRate) * 1000.0);
-        wmv_printf(10, "crazyFramerate: %u\n", crazyFramerate);
-        
-        pData += METADATA_STRUCT_C_START;
-
-        if(call->private_size > 0 && NULL != call->private_data)
-        {
-            memcpy (pData, call->private_data, WMV3_PRIVATE_DATA_LENGTH);
+        unsigned int codec_size = call->private_size;
+        if (codec_size > 4) codec_size = 4;
+#ifdef DREAMBOX
+        if (codec_size == 4) {
+            uint8_t brcm_vc1sm_sequence_header[] = {
+                    0x00, 0x00, 0x01, 0x0F,
+                    (call->Width >> 8) & 0xFF, call->Width&0xFF,
+                    (call->Height >> 8) & 0xFF, call->Height&0xFF,
+                    0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            };
+            uint8_t *dest = malloc(sizeof(brcm_vc1sm_sequence_header));
+            memcpy(dest, brcm_vc1sm_sequence_header, sizeof(brcm_vc1sm_sequence_header));
+            memcpy(dest+8, call->private_data, 4);
+            //data[0] >>= 4;
+            //    if (data[0] != 4 && data[0] != 0)
+            //            GST_ERROR_OBJECT(self, "unsupported vc1-sm video compression format (profile %d)", data[0]);
+            //					self->codec_data = dest;
+            iov[ic].iov_base  = dest;
+            iov[ic++].iov_len = sizeof(brcm_vc1sm_sequence_header);
+            PacketLength     += sizeof(brcm_vc1sm_sequence_header);
         }
-        pData += WMV3_PRIVATE_DATA_LENGTH;
-
-        /* Metadata Header Struct A */
-        *pData++           = (call->Height >>  0) & 0xff;
-        *pData++           = (call->Height >>  8) & 0xff;
-        *pData++           = (call->Height >> 16) & 0xff;
-        *pData++           =  call->Height >> 24;
-        *pData++           = (call->Width  >>  0) & 0xff;
-        *pData++           = (call->Width  >>  8) & 0xff;
-        *pData++           = (call->Width  >> 16) & 0xff;
-        *pData++           =  call->Width  >> 24;
-
-        pData             += 12;       /* Skip flag word and Struct B first 8 bytes */
-
-        *pData++           = (crazyFramerate >>  0) & 0xff;
-        *pData++           = (crazyFramerate >>  8) & 0xff;
-        *pData++           = (crazyFramerate >> 16) & 0xff;
-        *pData++           =  crazyFramerate >> 24;
-        ioctl(call->fd, VIDEO_SET_CODEC_DATA, &videocodecdata);
+    }
 #else
-        
-        videocodecdata.length = call->private_size + 22;
-        if(videocodecdata.length<33)
-        {
-            videocodecdata.length = 33;
-        }
-        
-        videocodecdata.data  = malloc(videocodecdata.length);
-        printf("length[%d] private_size[%d]\n", videocodecdata.length, call->private_size);
-        memset(videocodecdata.data, 0, videocodecdata.length);
-        
-        uint8_t *pData = videocodecdata.data + 18;
-        /* width */
-        *(pData++) = (call->Width >> 8) & 0xff;
-        *(pData++) = call->Width & 0xff;
-        /* height */
-        *(pData++) = (call->Height >> 8) & 0xff;
-        *(pData++) = call->Height & 0xff;
-        
-        if(call->private_size > 0 && NULL != call->private_data)
-        {
-            memcpy(pData, call->private_data, call->private_size);
-        }
-        
-        if(!ioctl(call->fd, VIDEO_SET_CODEC_DATA, &videocodecdata))
-        {
-            ;//printf("OKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK\n");
-        }
-        else
-        {
-            printf("NOT OKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK\n");
-            iov[ic].iov_base  = call->private_data;
-            iov[ic++].iov_len = call->private_size;
-            PacketLength     += call->private_size;
-        }
-#endif
-        
+        // XTREND WAY
         if(videocodecdata.data)
         {
             free(videocodecdata.data);
+            videocodecdata.data = NULL;
         }
+
+        wmv_printf(10, "Width %d\n", call->Width);
+        wmv_printf(10, "Height %d\n", call->Height);
+ 
+        videocodecdata.length = 33;
+        uint8_t *data = videocodecdata.data = malloc(videocodecdata.length);
+        memset(videocodecdata.data, 0, videocodecdata.length);
+        data += 18;
+        /* width */
+        *(data++) = (call->Width >> 8) & 0xff;
+        *(data++) = call->Width & 0xff;
+        /* height */
+        *(data++) = (call->Height >> 8) & 0xff;
+        *(data++) = call->Height & 0xff;
+        if (call->private_data && codec_size) memcpy(data, call->private_data, codec_size);
+        ioctl(call->fd, VIDEO_SET_CODEC_DATA, &videocodecdata);
     }
-    
-    printf("call->private_size [%d]\n", call->private_size);
-    
+#endif
+
     uint8_t needFrameStartCode = 0;
     if( sizeof(Vc1FrameStartCode) >= call->len
         || memcmp(call->data, Vc1FrameStartCode, sizeof(Vc1FrameStartCode)) != 0 )
@@ -275,10 +204,20 @@ static int writeData(void* _call)
     PacketLength     += call->len;
     
     iov[0].iov_len = InsertPesHeader(PesHeader, PacketLength, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
+
+    /* some mipsel receiver(s) like et4x00 needs to have Copy(0)/Original(1) flag set to Original */
+    PesHeader[6] |= 1;
+    
     if(needFrameStartCode)
     {
         memcpy(PesHeader + iov[0].iov_len, Vc1FrameStartCode, sizeof(Vc1FrameStartCode) );
         iov[0].iov_len += sizeof(Vc1FrameStartCode);
+    }
+    
+    if(videocodecdata.data)
+    {
+        free(videocodecdata.data);
+        videocodecdata.data = NULL;
     }
     
     return writev_with_retry(call->fd, iov, ic);
@@ -293,7 +232,11 @@ static WriterCaps_t caps = {
     eVideo,
     "V_WMV",
     VIDEO_ENCODING_WMV,
+#ifdef DREAMBOX
+    17,
+#else
     STREAMTYPE_VC1_SM,
+#endif
     CT_MPEG4_PART2
 };
 
